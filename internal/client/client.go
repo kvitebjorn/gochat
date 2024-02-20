@@ -13,13 +13,17 @@ import (
 	"github.com/rivo/tview"
 )
 
+var username string
 var conn *websocket.Conn
 var chatMsgs = []string{}
 
+var pages = tview.NewPages()
 var app = tview.NewApplication()
+var login = tview.NewFlex()
 var flex = tview.NewFlex()
 var chatArea = tview.NewTextView()
 var bufferArea = tview.NewTextArea()
+var exit = tview.NewModal()
 
 func Start() {
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -30,14 +34,31 @@ func Start() {
 			} else {
 				send()
 			}
-		case tcell.KeyEsc:
+		case tcell.KeyEsc | tcell.KeyEscape | tcell.KeyESC:
+			go func() {
+				app.QueueUpdateDraw(func() {
+					pages.SwitchToPage("exit")
+				})
+			}()
+		default:
+		}
+		return event
+	})
+
+	username = "kyle"
+
+	exit.SetTitle("Exit")
+	exit.SetText("Really quit?")
+	exit.AddButtons([]string{"Cancel", "OK"})
+	exit.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+		if buttonLabel == "OK" {
 			if conn != nil {
 				disconnect()
 			}
 			app.Stop()
-		default:
+		} else {
+			pages.SwitchToPage("main")
 		}
-		return event
 	})
 
 	chatArea.SetTextColor(tcell.ColorGreen)
@@ -57,20 +78,29 @@ func Start() {
 	flex.AddItem(chatArea, 0, 4, false)
 	flex.AddItem(bufferArea, 3, 1, true)
 
+	pages.AddPage("login", login, true, false)
+	pages.AddPage("main", flex, true, true)
+	pages.AddPage("exit", exit, true, false)
+
 	go listen()
 
-	if err := app.SetRoot(flex, true).EnableMouse(true).Run(); err != nil {
+	if err := app.SetRoot(pages, true).EnableMouse(true).Run(); err != nil {
 		panic(err)
 	}
 }
 
 func connect() {
+	if currPageName, _ := pages.GetFrontPage(); currPageName != "main" {
+		return
+	}
+
 	chatArea.Clear()
 
-	emitToChat("Starting client...")
+	hello := fmt.Sprintf("Hello, %s.", username)
+	emitToChat(hello)
 
 	u := url.URL{Scheme: "ws", Host: "localhost:8080", Path: "/ws"}
-	connectingMsg := fmt.Sprintf("Connecting to %s", u.String())
+	connectingMsg := fmt.Sprintf("Connecting to %s ...", u.String())
 	emitToChat(connectingMsg)
 
 	var resp *http.Response
@@ -83,6 +113,7 @@ func connect() {
 			errMsg = fmt.Sprintf("Handshake failed with status code %d", resp.StatusCode)
 			emitToChat(errMsg)
 		}
+		emitToChat("Press ENTER to try again.\n")
 		return
 	}
 
@@ -96,13 +127,17 @@ func emitToChat(msg string) {
 }
 
 func send() {
+	if currPageName, _ := pages.GetFrontPage(); currPageName != "main" {
+		return
+	}
+
 	buffer := strings.TrimSpace(bufferArea.GetText())
 	if buffer == "" {
 		return
 	}
 
 	var msg requests.Message
-	msg.Username = "kyle"
+	msg.Username = username
 	msg.Message = buffer
 	err := conn.WriteJSON(&msg)
 	if err != nil {
