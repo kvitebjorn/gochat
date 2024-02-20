@@ -55,7 +55,7 @@ func Start() {
 
 	flex.SetDirection(tview.FlexRow)
 	flex.AddItem(chatArea, 0, 4, false)
-	flex.AddItem(bufferArea, 0, 1, true)
+	flex.AddItem(bufferArea, 3, 1, true)
 
 	go listen()
 
