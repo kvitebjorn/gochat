@@ -2,168 +2,141 @@ package client
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"strings"
-	"unicode"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/gorilla/websocket"
 	"github.com/kvitebjorn/gochat/internal/requests"
+	"github.com/rivo/tview"
 )
 
+var conn *websocket.Conn
+var chatMsgs = []string{}
+
+var app = tview.NewApplication()
+var flex = tview.NewFlex()
+var chatArea = tview.NewTextView()
+var bufferArea = tview.NewTextArea()
+
 func Start() {
-	s, err := tcell.NewScreen()
-	if err != nil {
-		//log.Fatalf("%+v", err) TODO use `log`
-		fmt.Println("tcell new screen fatal")
-		return
-	}
-	if err := s.Init(); err != nil {
-		//log.Fatalf("%+v", err)
-		fmt.Println("tcell init fatal")
-		return
-	}
-
-	// Set default text style
-	defStyle := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
-	s.SetStyle(defStyle)
-	s.EnablePaste()
-
-	// Clear screen
-	s.Clear()
-
-	// Begin showing the terminal screen
-	s.Show()
-
-	// Set up panic and trace
-	quit := func() {
-		maybePanic := recover()
-		s.Fini()
-		if maybePanic != nil {
-			panic(maybePanic)
-		}
-	}
-	defer quit()
-
-	xmax, ymax := s.Size()
-	var currx, curry int
-
-	drawText(s, currx, curry, xmax-1, ymax-2, tcell.StyleDefault, "Starting client...", true)
-	curry++
-	s.Show()
-
-	// Websocket stuff
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-
-	u := url.URL{Scheme: "ws", Host: "localhost:8080", Path: "/ws"}
-	drawText(s, currx, curry, xmax-1, ymax-2, tcell.StyleDefault, fmt.Sprintf("Connecting to %s\n", u.String()), true)
-	curry++
-	s.Show()
-
-	conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		fmt.Printf("dial: %v\n", err)
-		if resp != nil {
-			fmt.Printf("handshake failed with status %d\n", resp.StatusCode)
-		}
-	}
-	defer conn.Close()
-	drawText(s, currx, curry, xmax-1, ymax-2, tcell.StyleDefault, "Connected!", true)
-	curry++
-	s.Show()
-
-	visibileCursorX := 1
-	visibleCursorY := ymax - 1
-	virtualCursorX := 1
-	msgLimitX := xmax - 1
-	var sb strings.Builder
-
-	// UI Event loop
-	for {
-		s.ShowCursor(visibileCursorX, visibleCursorY)
-
-		// Update screen
-		s.Show()
-
-		// Poll event
-		ev := s.PollEvent()
-
-		// Process event
-		switch ev := ev.(type) {
-		case *tcell.EventResize:
-			s.Sync()
-		case *tcell.EventKey:
-			if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC {
-				return
-			} else if ev.Key() == tcell.KeyCtrlL {
-				s.Sync()
-			} else if ev.Key() == tcell.KeyEnter {
-				if strings.TrimSpace(sb.String()) == "" {
-					break
-				}
-				var msg requests.Message
-				msg.Username = "kyle"
-				msg.Message = sb.String()
-				added := drawText(s, currx, curry, xmax-1, ymax-2, tcell.StyleDefault, fmt.Sprintf("%s: %s", msg.Username, msg.Message), true)
-				curry += added + 1
-				err := conn.WriteJSON(&msg)
-				if err != nil {
-					fmt.Println(err)
-					break
-				}
-				sb.Reset()
-				visibileCursorX = 1
-				virtualCursorX = 1
-				drawText(s, visibileCursorX, visibleCursorY, xmax-1, ymax, tcell.StyleDefault, strings.Repeat(" ", xmax), false)
-			} else if ev.Key() == tcell.KeyBackspace ||
-				ev.Key() == tcell.KeyBackspace2 ||
-				ev.Key() == tcell.KeyDelete {
-				if sb.Len() < 1 {
-					break
-				}
-				visibileCursorX--
-				virtualCursorX--
-				drawText(s, visibileCursorX, visibleCursorY, xmax, ymax, tcell.StyleDefault, " ", false)
-				currentString := sb.String()
-				sb.Reset()
-				sb.WriteString(currentString[0 : len(currentString)-1])
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyEnter:
+			if conn == nil {
+				connect()
 			} else {
-				if !unicode.IsPrint(ev.Rune()) {
-					break
-				}
-				sb.WriteRune(ev.Rune())
-				if visibileCursorX >= msgLimitX {
-					diff := virtualCursorX - msgLimitX
-					drawText(s, 1, visibleCursorY, xmax-1, ymax, tcell.StyleDefault, sb.String()[diff:], false)
-				} else {
-					drawText(s, visibileCursorX, visibleCursorY, xmax-1, ymax, tcell.StyleDefault, string(ev.Rune()), false)
-					visibileCursorX++
-				}
-				virtualCursorX++
+				send()
 			}
+		case tcell.KeyEsc:
+			if conn != nil {
+				disconnect()
+			}
+			app.Stop()
+		default:
 		}
+		return event
+	})
+
+	chatArea.SetTextColor(tcell.ColorGreen)
+	chatArea.SetBorder(true)
+	chatArea.SetBorderStyle(tcell.StyleDefault)
+	chatArea.SetText("(ENTER) to connect\n(ESC) to quit")
+	chatArea.SetTitle("Chat")
+	chatArea.SetWordWrap(true)
+
+	bufferArea.SetTitle("Send")
+	bufferArea.SetTitleAlign(tview.AlignLeft)
+	bufferArea.SetBorder(true)
+	bufferArea.SetBorderStyle(tcell.StyleDefault)
+	bufferArea.SetPlaceholder("Type a message here, then press ENTER to send...")
+
+	flex.SetDirection(tview.FlexRow)
+	flex.AddItem(chatArea, 0, 4, false)
+	flex.AddItem(bufferArea, 0, 1, true)
+
+	go listen()
+
+	if err := app.SetRoot(flex, true).EnableMouse(true).Run(); err != nil {
+		panic(err)
 	}
 }
 
-func drawText(s tcell.Screen, x1, y1, x2, y2 int, style tcell.Style, text string, wrap bool) int {
-	row := y1
-	col := x1
-	added := 0
-	for _, r := range text {
-		s.SetContent(col, row, r, nil, style)
-		col++
-		if col >= x2 && wrap {
-			row++
-			added++
-			col = x1
+func connect() {
+	chatArea.Clear()
+
+	emitToChat("Starting client...")
+
+	u := url.URL{Scheme: "ws", Host: "localhost:8080", Path: "/ws"}
+	connectingMsg := fmt.Sprintf("Connecting to %s", u.String())
+	emitToChat(connectingMsg)
+
+	var resp *http.Response
+	var err error
+	conn, resp, err = websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error dialing %s: %v\n", u.String(), err.Error())
+		emitToChat(errMsg)
+		if resp != nil {
+			errMsg = fmt.Sprintf("Handshake failed with status code %d", resp.StatusCode)
+			emitToChat(errMsg)
 		}
-		if row > y2 {
-			break
-		}
+		return
 	}
 
-	return added
+	emitToChat("Connected!")
+}
+
+func emitToChat(msg string) {
+	chatMsgs = append(chatMsgs, msg)
+	chatArea.SetText(strings.Join(chatMsgs, "\n"))
+	chatArea.ScrollToEnd()
+}
+
+func send() {
+	buffer := strings.TrimSpace(bufferArea.GetText())
+	if buffer == "" {
+		return
+	}
+
+	var msg requests.Message
+	msg.Username = "kyle"
+	msg.Message = buffer
+	err := conn.WriteJSON(&msg)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to send message with error: %s", err.Error())
+		emitToChat(errMsg)
+	}
+
+	bufferArea.SetText("", true)
+}
+
+func listen() {
+	for {
+		if conn == nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		var msg requests.Message
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to read message with error: %s", err.Error())
+			emitToChat(errMsg)
+			disconnect()
+			return
+		}
+		newChatMsg := fmt.Sprintf("%s: %s", msg.Username, msg.Message)
+		emitToChat(newChatMsg)
+	}
+}
+
+func disconnect() {
+	if conn == nil {
+		return
+	}
+	conn.Close()
+	emitToChat("Disconnected!")
 }
