@@ -10,7 +10,7 @@ import (
 	"github.com/kvitebjorn/gochat/internal/requests"
 )
 
-type Client struct {
+type User struct {
 	Username string
 	Conn     *websocket.Conn
 }
@@ -36,9 +36,9 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-var clientsMu sync.Mutex
-var clients = make(map[Client]bool)
-var broadcast = make(chan requests.Message)
+var USERS_MU sync.Mutex
+var USERS = make(map[User]bool)
+var BROADCAST = make(chan requests.Message)
 
 func home(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Welcome to the Chat Room!")
@@ -49,14 +49,14 @@ func pong(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUsers(w http.ResponseWriter, r *http.Request) {
-	clientsCopy := make([]string, 0)
-	clientsMu.Lock()
-	for k := range clients {
-		clientsCopy = append(clientsCopy, k.Username)
+	var usersMsg requests.UsersMsg
+	USERS_MU.Lock()
+	for k := range USERS {
+		usersMsg.Users = append(usersMsg.Users, k.Username)
 	}
-	clientsMu.Unlock()
+	USERS_MU.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(clientsCopy)
+	json.NewEncoder(w).Encode(&usersMsg)
 }
 
 func handleConnection(w http.ResponseWriter, r *http.Request) {
@@ -70,46 +70,49 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 	// Wait for initial hello message
 	var msg requests.Message
 	err = conn.ReadJSON(&msg)
-	if err != nil {
+	if err != nil || msg.Code != requests.Salutations {
+		fmt.Printf("%v %s\n", msg.Code, err.Error())
 		return
 	}
-	client := Client{msg.Username, conn}
+	user := User{msg.Username, conn}
+	BROADCAST <- msg
 
-	clientsMu.Lock()
-	clients[client] = true
-	clientsMu.Unlock()
+	USERS_MU.Lock()
+	USERS[user] = true
+	USERS_MU.Unlock()
 
-	connMsg := fmt.Sprintf("%s connected!", client.Username)
-	broadcast <- requests.Message{Username: "SERVER", Message: connMsg}
+	connMsg := fmt.Sprintf("%s connected!", user.Username)
+	BROADCAST <- requests.Message{Username: "SERVER", Message: connMsg, Code: requests.Chatter}
 
 	// Listen for chat messages, and add them to the broadcast channel to be fanned out
 	for {
 		var msg requests.Message
 		err := conn.ReadJSON(&msg)
 		if err != nil {
-			clientsMu.Lock()
-			delete(clients, client)
-			clientsMu.Unlock()
-			disconnectMsg := fmt.Sprintf("%s disconnected!", client.Username)
-			broadcast <- requests.Message{Username: "SERVER", Message: disconnectMsg}
+			USERS_MU.Lock()
+			delete(USERS, user)
+			USERS_MU.Unlock()
+			disconnectMsg := fmt.Sprintf("%s disconnected!", user.Username)
+			BROADCAST <- requests.Message{Username: user.Username, Message: "bye", Code: requests.Valediction}
+			BROADCAST <- requests.Message{Username: "SERVER", Message: disconnectMsg, Code: requests.Chatter}
 			return
 		}
 
-		broadcast <- msg
+		BROADCAST <- msg
 	}
 }
 
 func handleMessages() {
 	for {
-		msg := <-broadcast
+		msg := <-BROADCAST
 
-		clientsMu.Lock()
-		for client := range clients {
-			err := client.Conn.WriteJSON(msg)
+		USERS_MU.Lock()
+		for user := range USERS {
+			err := user.Conn.WriteJSON(msg)
 			if err != nil {
 				fmt.Println(err)
 			}
 		}
-		clientsMu.Unlock()
+		USERS_MU.Unlock()
 	}
 }

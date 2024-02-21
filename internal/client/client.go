@@ -1,10 +1,12 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -16,7 +18,9 @@ import (
 var USERNAME string
 var ADDRESS string
 var CONN *websocket.Conn
-var CHAT_MSGS = []string{}
+var CHAT_MSGS = []string{} // TODO: prune these when len exceeds x - might be a setting in the TextView?
+var USERS = map[string]bool{}
+var USERS_MU sync.Mutex
 
 var PAGES = tview.NewPages()
 var APP = tview.NewApplication()
@@ -24,6 +28,7 @@ var LOGIN = tview.NewForm()
 var MAIN = tview.NewFlex()
 var CHAT_AREA = tview.NewTextView()
 var BUFFER_AREA = tview.NewTextArea()
+var USER_LIST = tview.NewList()
 var EXIT = tview.NewModal()
 
 var BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT = "Type a message here, then press ENTER to send..."
@@ -96,8 +101,14 @@ func Start() {
 		return event
 	})
 
+	USER_LIST.SetTitle("Users")
+	USER_LIST.SetBorder(true)
+	mainTopFlex := tview.NewFlex()
+	mainTopFlex.SetDirection(tview.FlexColumn)
+	mainTopFlex.AddItem(CHAT_AREA, 0, 3, true)
+	mainTopFlex.AddItem(USER_LIST, 0, 1, true)
 	MAIN.SetDirection(tview.FlexRow)
-	MAIN.AddItem(CHAT_AREA, 0, 4, false)
+	MAIN.AddItem(mainTopFlex, 0, 4, false)
 	MAIN.AddItem(BUFFER_AREA, 3, 1, true)
 
 	PAGES.AddPage("login", LOGIN, true, true)
@@ -153,10 +164,10 @@ func connect() {
 	var err error
 	CONN, resp, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		errMsg := fmt.Sprintf("Error dialing %s: %v\n", u.String(), err.Error())
+		errMsg := fmt.Sprintf("Error dialing %s: %v", u.String(), err.Error())
 		emitToChat(errMsg)
 		if resp != nil {
-			errMsg = fmt.Sprintf("Handshake failed with status code %d", resp.StatusCode)
+			errMsg = fmt.Sprintf("Dialer failed with status code %d", resp.StatusCode)
 			emitToChat(errMsg)
 		}
 		disableBufferArea()
@@ -167,6 +178,7 @@ func connect() {
 	var msg requests.Message
 	msg.Username = USERNAME
 	msg.Message = "hi"
+	msg.Code = requests.Salutations
 	err = CONN.WriteJSON(&msg)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to handshake with server: %s", err.Error())
@@ -185,6 +197,54 @@ func emitToChat(msg string) {
 	CHAT_AREA.ScrollToEnd()
 }
 
+func initializeUserList() {
+	requestURL := fmt.Sprintf("http://%s/users", ADDRESS)
+	var myClient = &http.Client{Timeout: 10 * time.Second}
+	res, err := myClient.Get(requestURL)
+	if err != nil || res.StatusCode != 200 {
+		errMsg := fmt.Sprintf("Error initializing user list: %s %v", err, res.StatusCode)
+		emitToChat(errMsg)
+		return
+	}
+	defer res.Body.Close()
+
+	var msg requests.UsersMsg
+	err = json.NewDecoder(res.Body).Decode(&msg)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error initializing user list: %s", err)
+		emitToChat(errMsg)
+		return
+	}
+	for _, user := range msg.Users {
+		if user == USERNAME {
+			// we would've already known about ourselves...
+			// this is to get users who were online before us
+			continue
+		}
+		addToUserList(user)
+	}
+}
+
+func addToUserList(user string) {
+	USER_LIST.AddItem(user, "online", ' ', nil)
+	USERS_MU.Lock()
+	USERS[user] = true
+	USERS_MU.Unlock()
+}
+
+func removeFromUserList(user string) {
+	USER_LIST.Clear()
+	USERS_MU.Lock()
+	delete(USERS, user)
+	for user, online := range USERS {
+		if !online {
+			continue
+		}
+		USER_LIST.AddItem(user, "online", ' ', nil)
+	}
+	USERS_MU.Unlock()
+}
+
 func send() {
 	if currPageName, _ := PAGES.GetFrontPage(); currPageName != "main" {
 		return
@@ -198,6 +258,7 @@ func send() {
 	var msg requests.Message
 	msg.Username = USERNAME
 	msg.Message = buffer
+	msg.Code = requests.Chatter
 	err := CONN.WriteJSON(&msg)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to send message with error: %s", err.Error())
@@ -208,10 +269,16 @@ func send() {
 }
 
 func listen() {
+	isUserListInitialized := false
 	for {
 		if CONN == nil {
 			time.Sleep(1 * time.Second)
 			continue
+		}
+
+		if !isUserListInitialized {
+			initializeUserList()
+			isUserListInitialized = true
 		}
 
 		var msg requests.Message
@@ -222,8 +289,16 @@ func listen() {
 			disconnect()
 			return
 		}
-		newChatMsg := fmt.Sprintf("%s: %s", msg.Username, msg.Message)
-		emitToChat(newChatMsg)
+		switch msg.Code {
+		case requests.Salutations:
+			addToUserList(msg.Username)
+		case requests.Valediction:
+			removeFromUserList(msg.Username)
+		case requests.Chatter:
+			newChatMsg := fmt.Sprintf("%s: %s", msg.Username, msg.Message)
+			emitToChat(newChatMsg)
+		default:
+		}
 		APP.Draw()
 	}
 }
