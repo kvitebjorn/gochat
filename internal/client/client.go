@@ -163,6 +163,18 @@ func connect() {
 		return
 	}
 
+	// Send the initial hello to server
+	var msg requests.Message
+	msg.Username = USERNAME
+	msg.Message = "hi"
+	err = CONN.WriteJSON(&msg)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to handshake with server: %s", err.Error())
+		emitToChat(errMsg)
+		disableBufferArea()
+		return
+	}
+
 	enableBufferArea()
 	emitToChat("Connected!")
 }
