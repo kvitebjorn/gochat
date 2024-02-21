@@ -13,31 +13,28 @@ import (
 	"github.com/rivo/tview"
 )
 
-var username string
-var conn *websocket.Conn
-var chatMsgs = []string{}
+var USERNAME string
+var ADDRESS string
+var CONN *websocket.Conn
+var CHAT_MSGS = []string{}
 
-var pages = tview.NewPages()
-var app = tview.NewApplication()
-var login = tview.NewFlex()
-var flex = tview.NewFlex()
-var chatArea = tview.NewTextView()
-var bufferArea = tview.NewTextArea()
-var exit = tview.NewModal()
+var PAGES = tview.NewPages()
+var APP = tview.NewApplication()
+var LOGIN = tview.NewForm()
+var MAIN = tview.NewFlex()
+var CHAT_AREA = tview.NewTextView()
+var BUFFER_AREA = tview.NewTextArea()
+var EXIT = tview.NewModal()
+
+var BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT = "Type a message here, then press ENTER to send..."
 
 func Start() {
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+	APP.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
-		case tcell.KeyEnter:
-			if conn == nil {
-				connect()
-			} else {
-				send()
-			}
 		case tcell.KeyEsc | tcell.KeyEscape | tcell.KeyESC:
 			go func() {
-				app.QueueUpdateDraw(func() {
-					pages.SwitchToPage("exit")
+				APP.QueueUpdateDraw(func() {
+					PAGES.SwitchToPage("exit")
 				})
 			}()
 		default:
@@ -45,67 +42,116 @@ func Start() {
 		return event
 	})
 
-	username = "kyle"
+	LOGIN.AddInputField("What is your name?", "", 16, isUsernameValid, nil)
+	LOGIN.AddInputField("What is the server address?", "", 32, isAddressValid, nil)
+	LOGIN.AddButton("Connect", func() {
+		PAGES.SwitchToPage("main")
+		connect()
+	})
+	LOGIN.AddButton("Cancel", func() {
+		PAGES.SwitchToPage("exit")
+	})
+	LOGIN.SetBorder(true).SetTitle("Login").SetTitleAlign(tview.AlignLeft)
 
-	exit.SetTitle("Exit")
-	exit.SetText("Really quit?")
-	exit.AddButtons([]string{"Cancel", "OK"})
-	exit.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+	EXIT.SetText("Really quit?")
+	EXIT.AddButtons([]string{"Cancel", "OK"})
+	EXIT.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 		if buttonLabel == "OK" {
-			if conn != nil {
+			if CONN != nil {
 				disconnect()
 			}
-			app.Stop()
+			APP.Stop()
 		} else {
-			pages.SwitchToPage("main")
+			if isEmpty(USERNAME) || isEmpty(ADDRESS) {
+				PAGES.SwitchToPage("login")
+			} else {
+				PAGES.SwitchToPage("main")
+			}
 		}
 	})
 
-	chatArea.SetTextColor(tcell.ColorGreen)
-	chatArea.SetBorder(true)
-	chatArea.SetBorderStyle(tcell.StyleDefault)
-	chatArea.SetText("(ENTER) to connect\n(ESC) to quit")
-	chatArea.SetTitle("Chat")
-	chatArea.SetWordWrap(true)
+	CHAT_AREA.SetTextColor(tcell.ColorGreen)
+	CHAT_AREA.SetBorder(true)
+	CHAT_AREA.SetBorderStyle(tcell.StyleDefault)
+	CHAT_AREA.SetTitle("Chat")
+	CHAT_AREA.SetWordWrap(true)
 
-	bufferArea.SetTitle("Send")
-	bufferArea.SetTitleAlign(tview.AlignLeft)
-	bufferArea.SetBorder(true)
-	bufferArea.SetBorderStyle(tcell.StyleDefault)
-	bufferArea.SetPlaceholder("Type a message here, then press ENTER to send...")
+	BUFFER_AREA.SetTitle("Send")
+	BUFFER_AREA.SetTitleAlign(tview.AlignLeft)
+	BUFFER_AREA.SetBorder(true)
+	BUFFER_AREA.SetBorderStyle(tcell.StyleDefault)
+	BUFFER_AREA.SetPlaceholder(BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT)
+	BUFFER_AREA.SetWordWrap(false)
+	BUFFER_AREA.SetWrap(false)
+	BUFFER_AREA.SetFocusFunc(func() {
+		currentText := BUFFER_AREA.GetText()
+		BUFFER_AREA.SetText(strings.TrimSpace(currentText), true)
+	})
+	BUFFER_AREA.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyEnter:
+			send()
+		default:
+		}
+		return event
+	})
 
-	flex.SetDirection(tview.FlexRow)
-	flex.AddItem(chatArea, 0, 4, false)
-	flex.AddItem(bufferArea, 3, 1, true)
+	MAIN.SetDirection(tview.FlexRow)
+	MAIN.AddItem(CHAT_AREA, 0, 4, false)
+	MAIN.AddItem(BUFFER_AREA, 3, 1, true)
 
-	pages.AddPage("login", login, true, false)
-	pages.AddPage("main", flex, true, true)
-	pages.AddPage("exit", exit, true, false)
+	PAGES.AddPage("login", LOGIN, true, true)
+	PAGES.AddPage("main", MAIN, true, false)
+	PAGES.AddPage("exit", EXIT, true, false)
 
 	go listen()
 
-	if err := app.SetRoot(pages, true).EnableMouse(true).Run(); err != nil {
+	if err := APP.SetRoot(PAGES, true).SetFocus(LOGIN).EnableMouse(true).Run(); err != nil {
 		panic(err)
 	}
 }
 
+func isEmpty(s string) bool {
+	return len(strings.TrimSpace(s)) < 1
+}
+
+func isUsernameValid(name string, last rune) bool {
+	if isEmpty(name) {
+		return false
+	}
+	USERNAME = name
+	return true
+}
+
+func isAddressValid(address string, last rune) bool {
+	if isEmpty(address) {
+		return false
+	}
+	_, err := url.Parse(fmt.Sprintf("ws://%s", address))
+	if err != nil {
+		return false
+	}
+	ADDRESS = address
+	return true
+}
+
 func connect() {
-	if currPageName, _ := pages.GetFrontPage(); currPageName != "main" {
+	if currPageName, _ := PAGES.GetFrontPage(); currPageName != "main" {
 		return
 	}
 
-	chatArea.Clear()
+	CHAT_AREA.Clear()
 
-	hello := fmt.Sprintf("Hello, %s.", username)
+	hello := fmt.Sprintf("Hello, %s.", USERNAME)
 	emitToChat(hello)
 
-	u := url.URL{Scheme: "ws", Host: "localhost:8080", Path: "/ws"}
+	u := url.URL{Scheme: "ws", Host: ADDRESS, Path: "/ws"}
 	connectingMsg := fmt.Sprintf("Connecting to %s ...", u.String())
 	emitToChat(connectingMsg)
 
 	var resp *http.Response
 	var err error
-	conn, resp, err = websocket.DefaultDialer.Dial(u.String(), nil)
+	CONN, resp, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		errMsg := fmt.Sprintf("Error dialing %s: %v\n", u.String(), err.Error())
 		emitToChat(errMsg)
@@ -113,50 +159,51 @@ func connect() {
 			errMsg = fmt.Sprintf("Handshake failed with status code %d", resp.StatusCode)
 			emitToChat(errMsg)
 		}
-		emitToChat("Press ENTER to try again.\n")
+		disableBufferArea()
 		return
 	}
 
+	enableBufferArea()
 	emitToChat("Connected!")
 }
 
 func emitToChat(msg string) {
-	chatMsgs = append(chatMsgs, msg)
-	chatArea.SetText(strings.Join(chatMsgs, "\n"))
-	chatArea.ScrollToEnd()
+	CHAT_MSGS = append(CHAT_MSGS, msg)
+	CHAT_AREA.SetText(strings.Join(CHAT_MSGS, "\n"))
+	CHAT_AREA.ScrollToEnd()
 }
 
 func send() {
-	if currPageName, _ := pages.GetFrontPage(); currPageName != "main" {
+	if currPageName, _ := PAGES.GetFrontPage(); currPageName != "main" {
 		return
 	}
 
-	buffer := strings.TrimSpace(bufferArea.GetText())
+	buffer := strings.TrimSpace(BUFFER_AREA.GetText())
 	if buffer == "" {
 		return
 	}
 
 	var msg requests.Message
-	msg.Username = username
+	msg.Username = USERNAME
 	msg.Message = buffer
-	err := conn.WriteJSON(&msg)
+	err := CONN.WriteJSON(&msg)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to send message with error: %s", err.Error())
 		emitToChat(errMsg)
 	}
 
-	bufferArea.SetText("", true)
+	BUFFER_AREA.SetText("", false)
 }
 
 func listen() {
 	for {
-		if conn == nil {
+		if CONN == nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
 		var msg requests.Message
-		err := conn.ReadJSON(&msg)
+		err := CONN.ReadJSON(&msg)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to read message with error: %s", err.Error())
 			emitToChat(errMsg)
@@ -169,9 +216,26 @@ func listen() {
 }
 
 func disconnect() {
-	if conn == nil {
+	if CONN == nil {
 		return
 	}
-	conn.Close()
+	CONN.Close()
 	emitToChat("Disconnected!")
+
+	go func() {
+		APP.QueueUpdateDraw(func() {
+			disableBufferArea()
+		})
+	}()
+}
+
+func disableBufferArea() {
+	BUFFER_AREA.SetDisabled(true)
+	BUFFER_AREA.SetPlaceholder("")
+	APP.SetFocus(CHAT_AREA)
+}
+func enableBufferArea() {
+	BUFFER_AREA.SetDisabled(false)
+	BUFFER_AREA.SetPlaceholder(BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT)
+	APP.SetFocus(BUFFER_AREA)
 }
