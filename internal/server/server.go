@@ -49,19 +49,20 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	fmt.Println("Client connected!")
 	clientsMu.Lock()
 	clients[conn] = true
 	clientsMu.Unlock()
+
+	broadcast <- requests.Message{Username: "SERVER", Message: "Client connected!"}
 
 	for {
 		var msg requests.Message
 		err := conn.ReadJSON(&msg)
 		if err != nil {
-			fmt.Println("Client disconnected!")
 			clientsMu.Lock()
 			delete(clients, conn)
 			clientsMu.Unlock()
+			broadcast <- requests.Message{Username: "SERVER", Message: "Client disconnected!"}
 			return
 		}
 
@@ -72,7 +73,6 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 func handleMessages() {
 	for {
 		msg := <-broadcast
-		fmt.Printf("[received] %s: %s\n", msg.Username, msg.Message)
 
 		clientsMu.Lock()
 		for client := range clients {

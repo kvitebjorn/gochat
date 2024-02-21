@@ -212,6 +212,7 @@ func listen() {
 		}
 		newChatMsg := fmt.Sprintf("%s: %s", msg.Username, msg.Message)
 		emitToChat(newChatMsg)
+		APP.Draw()
 	}
 }
 
