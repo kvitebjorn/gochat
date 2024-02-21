@@ -49,7 +49,7 @@ func pong(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUsers(w http.ResponseWriter, r *http.Request) {
-	clientsCopy := make([]string, len(clients))
+	clientsCopy := make([]string, 0)
 	clientsMu.Lock()
 	for k := range clients {
 		clientsCopy = append(clientsCopy, k.Username)
