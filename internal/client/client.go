@@ -31,7 +31,7 @@ var BUFFER_AREA = tview.NewTextArea()
 var USER_LIST = tview.NewList()
 var EXIT = tview.NewModal()
 
-var BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT = "Type a message here, then press ENTER to send..."
+var BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT = "Press ENTER to send..."
 
 func Start() {
 	APP.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -226,7 +226,7 @@ func initializeUserList() {
 }
 
 func addToUserList(user string) {
-	USER_LIST.AddItem(user, "online", ' ', nil)
+	USER_LIST.AddItem(user, "online", 0, nil)
 	USERS_MU.Lock()
 	USERS[user] = true
 	USERS_MU.Unlock()
@@ -240,7 +240,7 @@ func removeFromUserList(user string) {
 		if !online {
 			continue
 		}
-		USER_LIST.AddItem(user, "online", ' ', nil)
+		USER_LIST.AddItem(user, "online", 0, nil)
 	}
 	USERS_MU.Unlock()
 }
