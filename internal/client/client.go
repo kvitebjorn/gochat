@@ -16,11 +16,13 @@ import (
 )
 
 var USERNAME string
-var ADDRESS string
+var HOST string
+var PORT = 8080
 var CONN *websocket.Conn
 var CHAT_MSGS = []string{} // TODO: prune these when len exceeds x - might be a setting in the TextView?
 var USERS = map[string]bool{}
 var USERS_MU sync.Mutex
+var SERVICE_DISCOVERY = ServiceDiscovery{}
 
 var PAGES = tview.NewPages()
 var APP = tview.NewApplication()
@@ -48,11 +50,22 @@ func Start() {
 	})
 
 	LOGIN.AddInputField("What is your name?", "", 16, isUsernameValid, nil)
-	LOGIN.AddInputField("What is the server address?", "", 32, isAddressValid, nil)
-	LOGIN.AddButton("Connect", func() {
-		PAGES.SwitchToPage("main")
-		connect()
-	})
+	LOGIN.AddDropDown("0 hosts detected", []string{}, -1, nil)
+	go func() {
+		hosts := SERVICE_DISCOVERY.Scan()
+		if len(hosts) > 0 {
+			LOGIN.RemoveFormItem(1)
+			label := fmt.Sprintf("%d hosts detected", len(hosts))
+			LOGIN.AddDropDown(label, hosts, 0, func(host string, optionIdx int) {
+				HOST = fmt.Sprintf("%s:%d", host, PORT)
+			})
+			LOGIN.AddButton("Connect", func() {
+				PAGES.SwitchToPage("main")
+				connect()
+			})
+			APP.Draw()
+		}
+	}()
 	LOGIN.AddButton("Cancel", func() {
 		PAGES.SwitchToPage("exit")
 	})
@@ -67,7 +80,7 @@ func Start() {
 			}
 			APP.Stop()
 		} else {
-			if isEmpty(USERNAME) || isEmpty(ADDRESS) {
+			if isEmpty(USERNAME) || isEmpty(HOST) {
 				PAGES.SwitchToPage("login")
 			} else {
 				PAGES.SwitchToPage("main")
@@ -134,18 +147,6 @@ func isUsernameValid(name string, last rune) bool {
 	return true
 }
 
-func isAddressValid(address string, last rune) bool {
-	if isEmpty(address) {
-		return false
-	}
-	_, err := url.Parse(fmt.Sprintf("ws://%s", address))
-	if err != nil {
-		return false
-	}
-	ADDRESS = address
-	return true
-}
-
 func connect() {
 	if currPageName, _ := PAGES.GetFrontPage(); currPageName != "main" {
 		return
@@ -156,7 +157,7 @@ func connect() {
 	hello := fmt.Sprintf("Hello, %s.", USERNAME)
 	emitToChat(hello)
 
-	u := url.URL{Scheme: "ws", Host: ADDRESS, Path: "/ws"}
+	u := url.URL{Scheme: "ws", Host: HOST, Path: "/ws"}
 	connectingMsg := fmt.Sprintf("Connecting to %s ...", u.String())
 	emitToChat(connectingMsg)
 
@@ -198,7 +199,7 @@ func emitToChat(msg string) {
 }
 
 func initializeUserList() {
-	requestURL := fmt.Sprintf("http://%s/users", ADDRESS)
+	requestURL := fmt.Sprintf("http://%s/users", HOST)
 	var myClient = &http.Client{Timeout: 10 * time.Second}
 	res, err := myClient.Get(requestURL)
 	if err != nil || res.StatusCode != 200 {
