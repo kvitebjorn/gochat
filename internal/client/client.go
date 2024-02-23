@@ -19,7 +19,7 @@ var USERNAME string
 var HOST string
 var PORT = 8080
 var CONN *websocket.Conn
-var CHAT_MSGS = []string{} // TODO: prune these when len exceeds x - might be a setting in the TextView?
+var CHAT_MSGS = []string{}
 var USERS = map[string]bool{}
 var USERS_MU sync.Mutex
 var SERVICE_DISCOVERY = ServiceDiscovery{}
@@ -53,18 +53,19 @@ func Start() {
 	LOGIN.AddDropDown("0 hosts detected", []string{}, -1, nil)
 	go func() {
 		hosts := SERVICE_DISCOVERY.Scan()
-		if len(hosts) > 0 {
-			LOGIN.RemoveFormItem(1)
-			label := fmt.Sprintf("%d hosts detected", len(hosts))
-			LOGIN.AddDropDown(label, hosts, 0, func(host string, optionIdx int) {
-				HOST = fmt.Sprintf("%s:%d", host, PORT)
-			})
-			LOGIN.AddButton("Connect", func() {
-				PAGES.SwitchToPage("main")
-				connect()
-			})
-			APP.Draw()
+		if len(hosts) < 1 {
+			return
 		}
+		LOGIN.RemoveFormItem(1)
+		label := fmt.Sprintf("%d hosts detected", len(hosts))
+		LOGIN.AddDropDown(label, hosts, 0, func(host string, optionIdx int) {
+			HOST = fmt.Sprintf("%s:%d", host, PORT)
+		})
+		LOGIN.AddButton("Connect", func() {
+			PAGES.SwitchToPage("main")
+			connect()
+		})
+		APP.Draw()
 	}()
 	LOGIN.AddButton("Cancel", func() {
 		PAGES.SwitchToPage("exit")
@@ -93,6 +94,9 @@ func Start() {
 	CHAT_AREA.SetBorderStyle(tcell.StyleDefault)
 	CHAT_AREA.SetTitle("Chat")
 	CHAT_AREA.SetWordWrap(true)
+	CHAT_AREA.SetMaxLines(1024)
+	CHAT_AREA.SetDynamicColors(true)
+	CHAT_AREA.SetToggleHighlights(true)
 
 	BUFFER_AREA.SetTitle("Send")
 	BUFFER_AREA.SetTitleAlign(tview.AlignLeft)
@@ -116,6 +120,7 @@ func Start() {
 
 	USER_LIST.SetTitle("Users")
 	USER_LIST.SetBorder(true)
+	USER_LIST.SetSelectedFocusOnly(true)
 	mainTopFlex := tview.NewFlex()
 	mainTopFlex.SetDirection(tview.FlexColumn)
 	mainTopFlex.AddItem(CHAT_AREA, 0, 3, true)
@@ -130,7 +135,11 @@ func Start() {
 
 	go listen()
 
-	if err := APP.SetRoot(PAGES, true).SetFocus(LOGIN).EnableMouse(true).Run(); err != nil {
+	if err := APP.SetRoot(PAGES, true).
+		SetFocus(LOGIN).
+		EnablePaste(true).
+		EnableMouse(true).
+		Run(); err != nil {
 		panic(err)
 	}
 }
