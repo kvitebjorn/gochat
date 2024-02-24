@@ -20,6 +20,7 @@ var HOST string
 var PORT = 8080
 var CONN *websocket.Conn
 var CHAT_MSGS = []string{}
+var CHAT_MSGS_MU sync.Mutex
 var USERS = map[string]bool{}
 var USERS_MU sync.Mutex
 var SERVICE_DISCOVERY = ServiceDiscovery{}
@@ -49,7 +50,7 @@ func Start() {
 		return event
 	})
 
-	LOGIN.AddInputField("What is your name?", "", 16, isUsernameValid, nil)
+	LOGIN.AddInputField("What is your name?", "", 16, nil, nil)
 	LOGIN.AddDropDown("0 hosts detected", []string{}, -1, nil)
 	go func() {
 		hosts := SERVICE_DISCOVERY.Scan()
@@ -62,6 +63,19 @@ func Start() {
 			HOST = fmt.Sprintf("%s:%d", host, PORT)
 		})
 		LOGIN.AddButton("Connect", func() {
+			usernameField := LOGIN.GetFormItemByLabel("What is your name?")
+			maybeUsername := usernameField.(*tview.InputField).GetText()
+			fmt.Println(maybeUsername)
+			if !isUsernameValid(maybeUsername) {
+				go func() {
+					APP.QueueUpdateDraw(func() {
+						usernameField.(*tview.InputField).SetText("")
+						APP.SetFocus(LOGIN)
+					})
+				}()
+				return
+			}
+			USERNAME = maybeUsername
 			PAGES.SwitchToPage("main")
 			connect()
 		})
@@ -148,11 +162,10 @@ func isEmpty(s string) bool {
 	return len(strings.TrimSpace(s)) < 1
 }
 
-func isUsernameValid(name string, last rune) bool {
-	if isEmpty(name) {
+func isUsernameValid(name string) bool {
+	if isEmpty(name) || strings.ToUpper(name) == "SERVER" {
 		return false
 	}
-	USERNAME = name
 	return true
 }
 
@@ -202,6 +215,13 @@ func connect() {
 }
 
 func emitToChat(msg string) {
+	CHAT_MSGS_MU.Lock()
+	defer CHAT_MSGS_MU.Unlock()
+
+	if len(CHAT_MSGS) > 2048 {
+		CHAT_MSGS = CHAT_MSGS[1024:]
+	}
+
 	CHAT_MSGS = append(CHAT_MSGS, msg)
 	CHAT_AREA.SetText(strings.Join(CHAT_MSGS, "\n"))
 	CHAT_AREA.ScrollToEnd()
@@ -226,6 +246,8 @@ func initializeUserList() {
 		return
 	}
 	for _, user := range msg.Users {
+		// TODO: won't work for duplicate usernames...
+		//       probably should an add `id` to each msg request too
 		if user == USERNAME {
 			// we would've already known about ourselves...
 			// this is to get users who were online before us
@@ -332,6 +354,7 @@ func disableBufferArea() {
 	BUFFER_AREA.SetPlaceholder("")
 	APP.SetFocus(CHAT_AREA)
 }
+
 func enableBufferArea() {
 	BUFFER_AREA.SetDisabled(false)
 	BUFFER_AREA.SetPlaceholder(BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT)
