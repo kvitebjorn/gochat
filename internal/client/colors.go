@@ -20,6 +20,12 @@ var CHAT_GREEN = toColorTag(GREEN)
 var CHAT_BLUE = toColorTag(BLUE)
 var CHAT_PURPLE = toColorTag(PURPLE)
 
+var USER_COLOR_TAGS = []string{
+	CHAT_BLUE,
+	CHAT_ORANGE,
+	CHAT_YELLOW,
+}
+
 func toColorTag(color string) string {
 	return fmt.Sprintf("[%s]", color)
 }

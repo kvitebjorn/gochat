@@ -16,12 +16,13 @@ import (
 )
 
 var USER requests.User
+var USER_MU sync.Mutex
 var HOST string
 var PORT = 8080
 var CONN *websocket.Conn
 var CHAT_MSGS = []string{}
 var CHAT_MSGS_MU sync.Mutex
-var USERS = map[string]bool{}
+var USERS = map[uint64]string{}
 var USERS_MU sync.Mutex
 var SERVICE_DISCOVERY = ServiceDiscovery{}
 
@@ -75,7 +76,9 @@ func Start() {
 				}()
 				return
 			}
+			USER_MU.Lock()
 			USER.Username = maybeUsername
+			USER_MU.Unlock()
 			PAGES.SwitchToPage("main")
 			connect()
 		})
@@ -95,11 +98,13 @@ func Start() {
 			}
 			APP.Stop()
 		} else {
+			USER_MU.Lock()
 			if isEmpty(USER.Username) || isEmpty(HOST) {
 				PAGES.SwitchToPage("login")
 			} else {
 				PAGES.SwitchToPage("main")
 			}
+			USER_MU.Unlock()
 		}
 	})
 
@@ -119,6 +124,7 @@ func Start() {
 	BUFFER_AREA.SetPlaceholder(BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT)
 	BUFFER_AREA.SetWordWrap(false)
 	BUFFER_AREA.SetWrap(false)
+	BUFFER_AREA.SetPlaceholderStyle(tcell.StyleDefault.Attributes(tcell.AttrDim))
 	BUFFER_AREA.SetFocusFunc(func() {
 		currentText := BUFFER_AREA.GetText()
 		BUFFER_AREA.SetText(strings.TrimSpace(currentText), true)
@@ -188,7 +194,9 @@ func connect() {
 
 	CHAT_AREA.Clear()
 
+	USER_MU.Lock()
 	hello := fmt.Sprintf("Hello, %s.", USER.Username)
+	USER_MU.Unlock()
 	emitToChat(clientMsg(hello))
 
 	u := url.URL{Scheme: "ws", Host: HOST, Path: "/ws"}
@@ -211,7 +219,9 @@ func connect() {
 
 	// Send the initial hello to server
 	var msg requests.Message
+	USER_MU.Lock()
 	msg.User = USER
+	USER_MU.Unlock()
 	msg.Message = "hi"
 	msg.Code = requests.Salutations
 	err = CONN.WriteJSON(&msg)
@@ -231,9 +241,9 @@ func connect() {
 		disconnect()
 		return
 	}
-	USERS_MU.Lock()
+	USER_MU.Lock()
 	USER.UserId = reply.User.UserId
-	USERS_MU.Unlock()
+	USER_MU.Unlock()
 
 	enableBufferArea()
 	emitToChat(clientMsg("Connected!"))
@@ -270,34 +280,44 @@ func initializeUserList() {
 		emitToChat(errorMsg(errMsg))
 		return
 	}
+	USER_MU.Lock()
+	userId := USER.UserId
+	USER_MU.Unlock()
 	for _, user := range msg.Users {
-		if user.UserId == USER.UserId {
-			// we would've already known about ourselves...
-			// this is to get users who were online before us
+		if user.UserId == userId {
+			// we already know about ourselves... this is to get users who were online before us
 			continue
 		}
-		addToUserList(user.Username)
+		addToUserList(user)
 	}
 }
 
-func addToUserList(user string) {
-	USER_LIST.AddItem(user, "online", 0, nil)
-	USERS_MU.Lock()
-	USERS[user] = true
-	USERS_MU.Unlock()
+func getUserListName(user requests.User) string {
+	return getUserColorTag(user.UserId) + user.Username
 }
 
-func removeFromUserList(user string) {
-	USER_LIST.Clear()
+func getUserListNameSubtext(user requests.User) string {
+	return fmt.Sprintf("  #%d", user.UserId)
+}
+
+func addToUserList(user requests.User) {
 	USERS_MU.Lock()
-	delete(USERS, user)
-	for user, online := range USERS {
-		if !online {
-			continue
-		}
-		USER_LIST.AddItem(user, "online", 0, nil)
+	defer USERS_MU.Unlock()
+
+	USER_LIST.AddItem(getUserListName(user), getUserListNameSubtext(user), 0, nil)
+	if _, found := USERS[user.UserId]; !found {
+		USERS[user.UserId] = user.Username
 	}
-	USERS_MU.Unlock()
+}
+
+func removeFromUserList(user requests.User) {
+	USERS_MU.Lock()
+	defer USERS_MU.Unlock()
+
+	delete(USERS, user.UserId)
+	found := USER_LIST.FindItems(user.Username, getUserListNameSubtext(user), true, false)
+	USER_LIST.RemoveItem(found[0])
+	APP.Draw()
 }
 
 func send() {
@@ -311,7 +331,9 @@ func send() {
 	}
 
 	var msg requests.Message
+	USER_MU.Lock()
 	msg.User = USER
+	USER_MU.Unlock()
 	msg.Message = buffer
 	msg.Code = requests.Chatter
 	err := CONN.WriteJSON(&msg)
@@ -324,18 +346,28 @@ func send() {
 }
 
 func listen() {
-	isUserListInitialized := false
 	for {
-		if CONN == nil || USER.UserId == 0 {
+		if CONN == nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		if !isUserListInitialized {
-			initializeUserList()
-			isUserListInitialized = true
+		USER_MU.Lock()
+		userId := USER.UserId
+		USER_MU.Unlock()
+
+		// We must wait for the handshake to complete
+		// It's complete when the user id is not zero
+		if userId == 0 {
+			time.Sleep(1 * time.Second)
+			continue
 		}
 
+		initializeUserList()
+		break
+	}
+
+	for {
 		var msg requests.Message
 		err := CONN.ReadJSON(&msg)
 		if err != nil {
@@ -346,17 +378,20 @@ func listen() {
 		}
 		switch msg.Code {
 		case requests.Salutations:
-			addToUserList(msg.User.Username)
+			addToUserList(msg.User)
 		case requests.Valediction:
-			removeFromUserList(msg.User.Username)
+			removeFromUserList(msg.User)
 		case requests.Chatter:
-			newChatMsg := fmt.Sprintf("%s: %s", msg.User.Username, msg.Message)
 			var newChatMsgPretty string
 			switch msg.User.UserId {
 			case 0:
+				newChatMsg := fmt.Sprintf("%s: %s", msg.User.Username, msg.Message)
 				newChatMsgPretty = serverMsg(newChatMsg)
 			default:
-				newChatMsgPretty = newChatMsg
+				userPrefix := getUserColorTag(msg.User.UserId) +
+					fmt.Sprintf("%s:", msg.User.Username) +
+					CHAT_WHITE
+				newChatMsgPretty = fmt.Sprintf("%s %s", userPrefix, msg.Message)
 			}
 			emitToChat(newChatMsgPretty)
 		default:
@@ -389,4 +424,9 @@ func enableBufferArea() {
 	BUFFER_AREA.SetDisabled(false)
 	BUFFER_AREA.SetPlaceholder(BUFFER_AREA_DEFAULT_PLACEHOLDER_TEXT)
 	APP.SetFocus(BUFFER_AREA)
+}
+
+func getUserColorTag(id uint64) string {
+	userColorIdx := id % uint64(len(USER_COLOR_TAGS))
+	return USER_COLOR_TAGS[userColorIdx]
 }

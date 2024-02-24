@@ -42,7 +42,7 @@ var upgrader = websocket.Upgrader{
 }
 
 var USERS_MU sync.Mutex
-var USERS = make(map[*Client]bool)
+var USERS = make(map[uint64]*Client)
 var BROADCAST = make(chan requests.Message)
 
 func home(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +56,8 @@ func pong(w http.ResponseWriter, r *http.Request) {
 func handleUsers(w http.ResponseWriter, r *http.Request) {
 	var usersMsg requests.UsersMsg
 	USERS_MU.Lock()
-	for k := range USERS {
-		usersMsg.Users = append(usersMsg.Users, *k.User)
+	for _, u := range USERS {
+		usersMsg.Users = append(usersMsg.Users, *u.User)
 	}
 	USERS_MU.Unlock()
 	w.Header().Set("Content-Type", "application/json")
@@ -80,12 +80,13 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	USER_COUNTER.Add(1)
-	if USER_COUNTER.Load() == math.MaxUint64-1 {
+	userId := USER_COUNTER.Add(1)
+	if userId == math.MaxUint64-1 {
 		fmt.Println("Server full")
 		return
 	}
-	user := requests.User{UserId: USER_COUNTER.Load(), Username: msg.User.Username}
+
+	user := requests.User{UserId: userId, Username: msg.User.Username}
 
 	// Send back our reply, they're waiting for their user id
 	var reply requests.Message
@@ -94,15 +95,21 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 	reply.Code = requests.Salutations
 	err = conn.WriteJSON(&reply)
 	if err != nil {
-		errMsg := fmt.Sprintf("Failed to handshake with server: %s", err.Error())
+		errMsg := fmt.Sprintf("Failed to handshake with client: %s", err.Error())
 		fmt.Println(errMsg)
 		return
 	}
 
-	USERS_MU.Lock()
 	client := Client{&user, conn}
+
+	USERS_MU.Lock()
+	USERS[userId] = &client
+
+	// re-use the original salutations message..
+	// but careful - we must update the user id after it was assigned!
+	msg.User.UserId = userId
 	BROADCAST <- msg
-	USERS[&client] = true
+
 	USERS_MU.Unlock()
 
 	connMsg := fmt.Sprintf("%s connected!", client.User.Username)
@@ -114,7 +121,7 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			USERS_MU.Lock()
-			delete(USERS, &client)
+			delete(USERS, userId)
 			USERS_MU.Unlock()
 			disconnectMsg := fmt.Sprintf("%s disconnected!", client.User.Username)
 			BROADCAST <- requests.Message{User: *client.User, Message: "bye", Code: requests.Valediction}
@@ -131,7 +138,7 @@ func handleMessages() {
 		msg := <-BROADCAST
 
 		USERS_MU.Lock()
-		for user := range USERS {
+		for _, user := range USERS {
 			err := user.Conn.WriteJSON(msg)
 			if err != nil {
 				fmt.Println(err)
