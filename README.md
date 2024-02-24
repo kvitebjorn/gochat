@@ -8,6 +8,7 @@ A simple chat server and client bundle for your local home network.
     - username selection
     - host selection
         - automatically scans for hosts on your local network to select from - no memorizing or typing IP addresses!
+        - only works for Class A `10.X.X.X` private network addressing (`192.168.X.X` not supported)
 - Press ESC to disconnect
 
 ![gochat](https://github.com/kvitebjorn/gochat/assets/7317556/60e5c467-f00f-4b71-a50c-e7b3764fea2b)
