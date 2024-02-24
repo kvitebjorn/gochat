@@ -8,15 +8,20 @@ const (
 	Chatter
 )
 
+type User struct {
+	UserId   uint64
+	Username string
+}
+
 type Message struct {
-	Username string     `json:"username"`
-	Message  string     `json:"message"`
-	Code     StatusCode `json:"code"`
+	User    User       `json:"user"`
+	Message string     `json:"message"`
+	Code    StatusCode `json:"code"`
 }
 
 type Ping struct {
 }
 
 type UsersMsg struct {
-	Users []string
+	Users []User
 }

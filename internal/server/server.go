@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/kvitebjorn/gochat/internal/requests"
 )
 
-type User struct {
-	Username string
-	Conn     *websocket.Conn
+type Client struct {
+	User *requests.User
+	Conn *websocket.Conn
 }
+
+var USER_COUNTER atomic.Uint64
+var SERVER_USER = requests.User{UserId: 0, Username: "SERVER"}
 
 func Start() {
 	http.HandleFunc("/", home)
@@ -37,7 +41,7 @@ var upgrader = websocket.Upgrader{
 }
 
 var USERS_MU sync.Mutex
-var USERS = make(map[User]bool)
+var USERS = make(map[*Client]bool)
 var BROADCAST = make(chan requests.Message)
 
 func home(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +56,7 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 	var usersMsg requests.UsersMsg
 	USERS_MU.Lock()
 	for k := range USERS {
-		usersMsg.Users = append(usersMsg.Users, k.Username)
+		usersMsg.Users = append(usersMsg.Users, *k.User)
 	}
 	USERS_MU.Unlock()
 	w.Header().Set("Content-Type", "application/json")
@@ -74,15 +78,31 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("%v %s\n", msg.Code, err.Error())
 		return
 	}
-	user := User{msg.Username, conn}
-	BROADCAST <- msg
+
+	USER_COUNTER.Add(1)
+	user := requests.User{UserId: USER_COUNTER.Load(), Username: msg.User.Username}
+
+	// Send back our reply, they're waiting for their user id
+	var reply requests.Message
+	reply.User = user
+	reply.Message = "id"
+	reply.Code = requests.Salutations
+	err = conn.WriteJSON(&reply)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to handshake with server: %s", err.Error())
+		fmt.Println(errMsg)
+		return
+	}
+	fmt.Printf("%s %d\n", user.Username, user.UserId)
 
 	USERS_MU.Lock()
-	USERS[user] = true
+	client := Client{&user, conn}
+	BROADCAST <- msg
+	USERS[&client] = true
 	USERS_MU.Unlock()
 
-	connMsg := fmt.Sprintf("%s connected!", user.Username)
-	BROADCAST <- requests.Message{Username: "SERVER", Message: connMsg, Code: requests.Chatter}
+	connMsg := fmt.Sprintf("%s connected!", client.User.Username)
+	BROADCAST <- requests.Message{User: SERVER_USER, Message: connMsg, Code: requests.Chatter}
 
 	// Listen for chat messages, and add them to the broadcast channel to be fanned out
 	for {
@@ -90,11 +110,11 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 		err := conn.ReadJSON(&msg)
 		if err != nil {
 			USERS_MU.Lock()
-			delete(USERS, user)
+			delete(USERS, &client)
 			USERS_MU.Unlock()
-			disconnectMsg := fmt.Sprintf("%s disconnected!", user.Username)
-			BROADCAST <- requests.Message{Username: user.Username, Message: "bye", Code: requests.Valediction}
-			BROADCAST <- requests.Message{Username: "SERVER", Message: disconnectMsg, Code: requests.Chatter}
+			disconnectMsg := fmt.Sprintf("%s disconnected!", client.User.Username)
+			BROADCAST <- requests.Message{User: *client.User, Message: "bye", Code: requests.Valediction}
+			BROADCAST <- requests.Message{User: SERVER_USER, Message: disconnectMsg, Code: requests.Chatter}
 			return
 		}
 

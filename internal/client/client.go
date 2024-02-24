@@ -15,7 +15,7 @@ import (
 	"github.com/rivo/tview"
 )
 
-var USERNAME string
+var USER requests.User
 var HOST string
 var PORT = 8080
 var CONN *websocket.Conn
@@ -75,7 +75,7 @@ func Start() {
 				}()
 				return
 			}
-			USERNAME = maybeUsername
+			USER.Username = maybeUsername
 			PAGES.SwitchToPage("main")
 			connect()
 		})
@@ -95,7 +95,7 @@ func Start() {
 			}
 			APP.Stop()
 		} else {
-			if isEmpty(USERNAME) || isEmpty(HOST) {
+			if isEmpty(USER.Username) || isEmpty(HOST) {
 				PAGES.SwitchToPage("login")
 			} else {
 				PAGES.SwitchToPage("main")
@@ -176,7 +176,7 @@ func connect() {
 
 	CHAT_AREA.Clear()
 
-	hello := fmt.Sprintf("Hello, %s.", USERNAME)
+	hello := fmt.Sprintf("Hello, %s.", USER.Username)
 	emitToChat(hello)
 
 	u := url.URL{Scheme: "ws", Host: HOST, Path: "/ws"}
@@ -199,7 +199,7 @@ func connect() {
 
 	// Send the initial hello to server
 	var msg requests.Message
-	msg.Username = USERNAME
+	msg.User = USER
 	msg.Message = "hi"
 	msg.Code = requests.Salutations
 	err = CONN.WriteJSON(&msg)
@@ -209,6 +209,19 @@ func connect() {
 		disableBufferArea()
 		return
 	}
+
+	// Listen for our response to get our user id
+	var reply requests.Message
+	err = CONN.ReadJSON(&reply)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to read message with error: %s", err.Error())
+		emitToChat(errMsg)
+		disconnect()
+		return
+	}
+	USERS_MU.Lock()
+	USER.UserId = reply.User.UserId
+	USERS_MU.Unlock()
 
 	enableBufferArea()
 	emitToChat("Connected!")
@@ -246,14 +259,12 @@ func initializeUserList() {
 		return
 	}
 	for _, user := range msg.Users {
-		// TODO: won't work for duplicate usernames...
-		//       probably should an add `id` to each msg request too
-		if user == USERNAME {
+		if user.UserId == USER.UserId {
 			// we would've already known about ourselves...
 			// this is to get users who were online before us
 			continue
 		}
-		addToUserList(user)
+		addToUserList(user.Username)
 	}
 }
 
@@ -288,7 +299,7 @@ func send() {
 	}
 
 	var msg requests.Message
-	msg.Username = USERNAME
+	msg.User = USER
 	msg.Message = buffer
 	msg.Code = requests.Chatter
 	err := CONN.WriteJSON(&msg)
@@ -303,7 +314,7 @@ func send() {
 func listen() {
 	isUserListInitialized := false
 	for {
-		if CONN == nil {
+		if CONN == nil || USER.UserId == 0 {
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -323,11 +334,11 @@ func listen() {
 		}
 		switch msg.Code {
 		case requests.Salutations:
-			addToUserList(msg.Username)
+			addToUserList(msg.User.Username)
 		case requests.Valediction:
-			removeFromUserList(msg.Username)
+			removeFromUserList(msg.User.Username)
 		case requests.Chatter:
-			newChatMsg := fmt.Sprintf("%s: %s", msg.Username, msg.Message)
+			newChatMsg := fmt.Sprintf("%s: %s", msg.User.Username, msg.Message)
 			emitToChat(newChatMsg)
 		default:
 		}
