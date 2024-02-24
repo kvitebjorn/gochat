@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -80,6 +81,10 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	USER_COUNTER.Add(1)
+	if USER_COUNTER.Load() == math.MaxUint64-1 {
+		fmt.Println("Server full")
+		return
+	}
 	user := requests.User{UserId: USER_COUNTER.Load(), Username: msg.User.Username}
 
 	// Send back our reply, they're waiting for their user id
@@ -93,7 +98,6 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(errMsg)
 		return
 	}
-	fmt.Printf("%s %d\n", user.Username, user.UserId)
 
 	USERS_MU.Lock()
 	client := Client{&user, conn}

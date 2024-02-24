@@ -103,7 +103,7 @@ func Start() {
 		}
 	})
 
-	CHAT_AREA.SetTextColor(tcell.ColorGreen)
+	CHAT_AREA.SetTextColor(tcell.ColorAntiqueWhite)
 	CHAT_AREA.SetBorder(true)
 	CHAT_AREA.SetBorderStyle(tcell.StyleDefault)
 	CHAT_AREA.SetTitle("Chat")
@@ -169,6 +169,18 @@ func isUsernameValid(name string) bool {
 	return true
 }
 
+func errorMsg(msg string) string {
+	return CHAT_RED + msg + CHAT_WHITE
+}
+
+func clientMsg(msg string) string {
+	return CHAT_PURPLE + msg + CHAT_WHITE
+}
+
+func serverMsg(msg string) string {
+	return CHAT_GREEN + msg + CHAT_WHITE
+}
+
 func connect() {
 	if currPageName, _ := PAGES.GetFrontPage(); currPageName != "main" {
 		return
@@ -177,21 +189,21 @@ func connect() {
 	CHAT_AREA.Clear()
 
 	hello := fmt.Sprintf("Hello, %s.", USER.Username)
-	emitToChat(hello)
+	emitToChat(clientMsg(hello))
 
 	u := url.URL{Scheme: "ws", Host: HOST, Path: "/ws"}
 	connectingMsg := fmt.Sprintf("Connecting to %s ...", u.String())
-	emitToChat(connectingMsg)
+	emitToChat(clientMsg(connectingMsg))
 
 	var resp *http.Response
 	var err error
 	CONN, resp, err = websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		errMsg := fmt.Sprintf("Error dialing %s: %v", u.String(), err.Error())
-		emitToChat(errMsg)
+		emitToChat(errorMsg(errMsg))
 		if resp != nil {
 			errMsg = fmt.Sprintf("Dialer failed with status code %d", resp.StatusCode)
-			emitToChat(errMsg)
+			emitToChat(errorMsg(errMsg))
 		}
 		disableBufferArea()
 		return
@@ -205,7 +217,7 @@ func connect() {
 	err = CONN.WriteJSON(&msg)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to handshake with server: %s", err.Error())
-		emitToChat(errMsg)
+		emitToChat(errorMsg(errMsg))
 		disableBufferArea()
 		return
 	}
@@ -215,7 +227,7 @@ func connect() {
 	err = CONN.ReadJSON(&reply)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to read message with error: %s", err.Error())
-		emitToChat(errMsg)
+		emitToChat(errorMsg(errMsg))
 		disconnect()
 		return
 	}
@@ -224,7 +236,7 @@ func connect() {
 	USERS_MU.Unlock()
 
 	enableBufferArea()
-	emitToChat("Connected!")
+	emitToChat(clientMsg("Connected!"))
 }
 
 func emitToChat(msg string) {
@@ -246,7 +258,7 @@ func initializeUserList() {
 	res, err := myClient.Get(requestURL)
 	if err != nil || res.StatusCode != 200 {
 		errMsg := fmt.Sprintf("Error initializing user list: %s %v", err, res.StatusCode)
-		emitToChat(errMsg)
+		emitToChat(errorMsg(errMsg))
 		return
 	}
 	defer res.Body.Close()
@@ -255,7 +267,7 @@ func initializeUserList() {
 	err = json.NewDecoder(res.Body).Decode(&msg)
 	if err != nil {
 		errMsg := fmt.Sprintf("Error initializing user list: %s", err)
-		emitToChat(errMsg)
+		emitToChat(errorMsg(errMsg))
 		return
 	}
 	for _, user := range msg.Users {
@@ -305,7 +317,7 @@ func send() {
 	err := CONN.WriteJSON(&msg)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to send message with error: %s", err.Error())
-		emitToChat(errMsg)
+		emitToChat(errorMsg(errMsg))
 	}
 
 	BUFFER_AREA.SetText("", false)
@@ -328,7 +340,7 @@ func listen() {
 		err := CONN.ReadJSON(&msg)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to read message with error: %s", err.Error())
-			emitToChat(errMsg)
+			emitToChat(errorMsg(errMsg))
 			disconnect()
 			return
 		}
@@ -339,7 +351,14 @@ func listen() {
 			removeFromUserList(msg.User.Username)
 		case requests.Chatter:
 			newChatMsg := fmt.Sprintf("%s: %s", msg.User.Username, msg.Message)
-			emitToChat(newChatMsg)
+			var newChatMsgPretty string
+			switch msg.User.UserId {
+			case 0:
+				newChatMsgPretty = serverMsg(newChatMsg)
+			default:
+				newChatMsgPretty = newChatMsg
+			}
+			emitToChat(newChatMsgPretty)
 		default:
 		}
 		APP.Draw()
@@ -351,7 +370,7 @@ func disconnect() {
 		return
 	}
 	CONN.Close()
-	emitToChat("Disconnected!")
+	emitToChat(clientMsg("Disconnected!"))
 
 	go func() {
 		APP.QueueUpdateDraw(func() {
