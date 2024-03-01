@@ -26,3 +26,8 @@ go build -o ./bin/server/gochat-server ./cmd/server && go build -o ./bin/client/
 ```
 env GOOS=windows GOARCH=amd64 go build -o ./bin/server/gochat-server-win.exe ./cmd/server && env GOOS=windows GOARCH=amd64 go build -o ./bin/client/gochat-client-win.exe ./cmd/client
 ```
+
+- ***Cross-platform (Raspberry Pi 5 example)***
+```
+env GOOS=linux GOARCH=arm GOARM=5 go build -o ./bin/server/gochat-server-arm ./cmd/server && env GOOS=linux GOARCH=arm GOARM=5 go build -o ./bin/client/gochat-client-arm ./cmd/client
+```
